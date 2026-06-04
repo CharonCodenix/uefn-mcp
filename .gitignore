@@ -1,0 +1,32 @@
+node_modules/
+
+# Local configuration
+.env
+.env.*
+!.env.example
+uefn-mcp.config.json
+guia_mcp_resumida_19_puntos.md
+
+# Logs and runtime output
+*.log
+logs/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Build/cache output
+dist/
+build/
+coverage/
+.cache/
+.tmp/
+tmp/
+__pycache__/
+*.pyc
+
+# OS/editor files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

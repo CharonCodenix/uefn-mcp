@@ -1,0 +1,12 @@
+{
+  "uefnProjectPath": "C:\\Path\\To\\Fortnite Projects\\YourProject",
+  "contentPath": "C:\\Path\\To\\Fortnite Projects\\YourProject\\Content",
+  "bridgeUrl": "http://127.0.0.1:8765",
+  "verseWorkflowHost": "127.0.0.1",
+  "verseWorkflowPort": 1962,
+  "bridgeBootstrapPort": 8766,
+  "uefnLogPath": "C:\\Users\\YourUser\\AppData\\Local\\UnrealEditorFortnite\\Saved\\Logs\\UnrealEditorFortnite.log",
+  "resourceCacheDir": ".uefn-mcp-cache",
+  "allowProjectPathOverride": false,
+  "allowExternalLogPath": false
+}
