@@ -12,11 +12,13 @@
   "scripts": {
     "start": "node ./src/server.mjs",
     "bridge:bootstrap": "node ./scripts/bridge_bootstrap_server.mjs",
+    "install:guided": "node ./scripts/guided_install.mjs",
+    "uninstall:guided": "node ./scripts/guided_uninstall.mjs",
     "uefn:install": "node ./scripts/install_uefn_plugin.mjs",
     "uefn:uninstall": "node ./scripts/install_uefn_plugin.mjs --uninstall",
     "test": "node --test ./test/*.test.mjs",
     "mcp:smoke": "node ./scripts/smoke_mcp.mjs",
-    "check": "node --check ./src/server.mjs && node --check ./scripts/install_uefn_plugin.mjs && python -m py_compile ./uefn-plugin/Content/Python/uefn_mcp_bridge/__init__.py ./uefn-plugin/Content/Python/start_uefn_mcp_bridge.py ./bridge/uefn_bridge.py && node --test ./test/*.test.mjs && node ./scripts/smoke_mcp.mjs"
+    "check": "node --check ./src/server.mjs && node --check ./scripts/install_uefn_plugin.mjs && node --check ./scripts/guided_install.mjs && node --check ./scripts/uninstall_helpers.mjs && node --check ./scripts/guided_uninstall.mjs && python -m py_compile ./uefn-plugin/Content/Python/uefn_mcp_bridge/__init__.py ./uefn-plugin/Content/Python/start_uefn_mcp_bridge.py ./bridge/uefn_bridge.py && node --test ./test/*.test.mjs && node ./scripts/smoke_mcp.mjs"
   },
   "engines": {
     "node": ">=20"

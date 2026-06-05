@@ -4,6 +4,13 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
+import { inspectUefnProjectPath } from "../src/lib/project.mjs";
+import { RollbackManager, assertSafeInstallTargets } from "./guided_install.mjs";
+import {
+  applyProjectUninstallPlan,
+  buildProjectUninstallPlan,
+  getEditorUserSettingsPath as getManagedEditorUserSettingsPath
+} from "./uninstall_helpers.mjs";
 
 const BLOCK_START = "# BEGIN UEFN_MCP_BRIDGE";
 const BLOCK_END = "# END UEFN_MCP_BRIDGE";
@@ -23,7 +30,7 @@ const result = await run();
 console.log(JSON.stringify(result, null, 2));
 
 async function run() {
-  const project = await inspectProject(projectPath);
+  const project = uninstall ? await inspectProjectForUninstall(projectPath) : await inspectProject(projectPath);
   const targetPythonRoot = path.join(project.projectPath, "Content", "Python");
   const targetPackageDir = path.join(targetPythonRoot, "uefn_mcp_bridge");
   const targetLauncher = path.join(targetPythonRoot, "start_uefn_mcp_bridge.py");
@@ -32,21 +39,29 @@ async function run() {
   const actions = [];
 
   if (uninstall) {
-    actions.push({ action: "remove_package", path: targetPackageDir });
-    actions.push({ action: "remove_launcher", path: targetLauncher });
-    actions.push({ action: "remove_init_block", path: targetInit });
-    if (editorUserSettings) {
-      actions.push({ action: "remove_python_recent_script", path: editorUserSettings, script: toUnrealPath(targetLauncher) });
-    }
+    const uninstallPlan = await buildProjectUninstallPlan(project, {
+      sourcePythonRoot,
+      editorUserSettings: getManagedEditorUserSettingsPath()
+    });
+    actions.push(...uninstallPlan.actions, ...uninstallPlan.skipped);
     if (!dryRun) {
-      await fs.rm(targetPackageDir, { recursive: true, force: true });
-      await fs.rm(targetLauncher, { force: true });
-      await updateInitFile(targetInit, { uninstall: true });
-      if (editorUserSettings) {
-        await updatePythonRecentScripts(editorUserSettings, targetLauncher, { uninstall: true });
+      const rollback = new RollbackManager({ operation: "Uninstallation" });
+      await rollback.prepare();
+      try {
+        await applyProjectUninstallPlan(uninstallPlan, { rollback });
+        rollback.commit();
+      } catch (error) {
+        await rollback.rollback(error);
+        throw error;
       }
     }
   } else {
+    await assertSafeInstallTargets(project, {
+      targetPythonRoot,
+      targetPackageDir,
+      targetLauncher,
+      targetInit
+    });
     actions.push({ action: "copy_package", from: path.join(sourcePythonRoot, "uefn_mcp_bridge"), to: targetPackageDir });
     actions.push({ action: "copy_launcher", from: path.join(sourcePythonRoot, "start_uefn_mcp_bridge.py"), to: targetLauncher });
     actions.push({ action: "insert_init_block", path: targetInit });
@@ -76,13 +91,24 @@ async function run() {
     project: {
       path: project.projectPath,
       uefnProjectPath: project.uefnProjectPath,
-      rootPluginPath: project.rootPluginPath
+      rootPluginPath: project.rootPluginPath ?? project.upluginPath
     },
     actions,
     codexConfigSnippet: codexSnippet(repoRoot),
     nextStep: uninstall
       ? "Restart UEFN to unload the launcher if it was already open."
       : "Restart UEFN, open the project, then click the UEFN MCP Bridge > Start Bridge launcher window."
+  };
+}
+
+async function inspectProjectForUninstall(projectPathValue) {
+  const inspection = await inspectUefnProjectPath(projectPathValue);
+  if (!inspection.safeToAnalyze) {
+    throw new Error(`UEFN project validation failed for ${projectPathValue}: ${inspection.errors.join("; ")}`);
+  }
+  return {
+    ...inspection,
+    rootPluginPath: inspection.upluginPath
   };
 }
 

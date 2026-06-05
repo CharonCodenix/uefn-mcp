@@ -8,17 +8,41 @@ This is a very early version of the project. The goal is to keep scaling it alon
 
 ## Installation Options
 
-You have two good ways to install it:
+You have three good ways to install it:
 
 1. Ask your preferred coding agent:
 
 ```text
-Install the public UEFN MCP from https://github.com/CharonCodenix/uefn-mcp into my UEFN project at C:\Path\To\Fortnite Projects\YourProject.
+Install the public UEFN MCP from https://github.com/CharonCodenix/uefn-mcp into the UEFN project folder I provide.
 ```
 
-Replace `C:\Path\To\Fortnite Projects\YourProject` with your real UEFN project folder.
+2. Run the guided automatic installer from this cloned repo:
 
-2. Install it manually with the step-by-step guide below.
+Open PowerShell in the cloned `uefn-mcp` folder and run:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\install.ps1
+```
+
+From the UEFN project folder, call the installer by absolute path:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File C:\Path\To\uefn-mcp\install.ps1
+```
+
+Or pass the project path explicitly:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File C:\Path\To\uefn-mcp\install.ps1 --project "C:\Path\To\Fortnite Projects\YourProject"
+```
+
+Replace `C:\Path\To\Fortnite Projects\YourProject` with the real path to your UEFN project folder before running commands that include it.
+
+The guided installer validates the UEFN project, installs the Python bridge, configures Codex and/or Claude Code, runs MCP smoke checks, and prints the final restart steps.
+
+If `pnpm` is missing, the guided installer can offer to install it with Corepack or npm before touching your UEFN project. If a critical step fails after project/config files were changed, it restores the files it touched from a timestamped backup folder. Optional UEFN bridge tests that report "not ready" do not trigger rollback because they usually mean UEFN is not open or the bridge has not been started yet.
+
+3. Install it manually with the step-by-step guide below.
 
 If Codex Desktop shows the MCP as enabled but the agent cannot see its tools, see [CODEX_MCP_TROUBLESHOOTING.md](CODEX_MCP_TROUBLESHOOTING.md). The usual fix is to fully restart Codex and confirm the MCP config points to the right local clone. Opening a new thread is usually not enough after changing MCP config.
 
@@ -59,7 +83,7 @@ If you already cloned or downloaded the repo, open PowerShell inside that folder
 2. Set your project path once. Keep this PowerShell window open and run the rest of the commands in the same window:
 
 ```powershell
-$ProjectPath = "C:\Path\To\Fortnite Projects\YourProject"
+$ProjectPath = "<your real UEFN project folder>"
 $RepoPath = (Get-Location).Path
 ```
 
@@ -190,17 +214,45 @@ Agents should not hardcode another user's project path, username, or machine-spe
 
 ## Uninstall
 
+Recommended guided uninstall:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\uninstall.ps1 --project "C:\Path\To\Fortnite Projects\YourProject"
+```
+
+Preview the exact removals without changing files:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\uninstall.ps1 --project "C:\Path\To\Fortnite Projects\YourProject" --dry-run
+```
+
+Replace `C:\Path\To\Fortnite Projects\YourProject` with the real path to your UEFN project folder before running the guided uninstall commands.
+
+The guided uninstaller validates the UEFN project, prints every planned removal, asks for `Y/N` confirmation with `N` as the default, backs up every touched file or directory, and rolls changes back if a critical uninstall step fails.
+
+By default, it removes only:
+
+- The managed UEFN Python package in `Content/Python/uefn_mcp_bridge`, after safety checks.
+- The managed `Content/Python/start_uefn_mcp_bridge.py` launcher, only if it still matches the installer-managed file.
+- The marked UEFN MCP block in `Content/Python/init_unreal.py`.
+- The matching UEFN recent-script entry, when present.
+- This clone's `uefn-mcp` block from Codex config.
+
+It does not delete your repo clone, `node_modules`, pnpm, UEFN project content, Claude Code config, or disable UEFN Python. It also keeps `uefn-mcp.config.json` unless you explicitly pass `--remove-local-config`, and even then it removes it only if it matches the generated local config shape.
+
+Low-level project plugin uninstall:
+
 ```powershell
 pnpm uefn:uninstall -- --project "$ProjectPath"
 ```
 
-This removes the managed Python package, launcher script, managed `init_unreal.py` block, and recent-script entry when present. It does not delete your UEFN project content.
+This uses the same safety checks for the UEFN project files. It does not remove the Codex MCP block; use `uninstall.ps1` for the complete guided uninstall.
 
 ## Security Notes
 
 - The UEFN bridge listens on `127.0.0.1` only. It is intended for local editor automation, not public network access.
 - The installer modifies only the target UEFN project you pass with `--project`: it copies the Python plugin, adds a managed `init_unreal.py` block, enables UEFN Python for the project, and may add a recent Python script entry.
-- The uninstall command removes the managed plugin files and managed `init_unreal.py` block. It does not delete your island content.
+- The guided uninstall command removes only validated UEFN MCP-managed files and this clone's Codex MCP block. It does not delete your island content, repo clone, dependencies, Claude Code config, or disable UEFN Python.
 - `uefn_run_python` uses a dry-run workflow. Scripts with warnings require an explicit `dryRunId` before execution, and execution requires the exact same script hash.
 - Actor updates default to dry-run behavior unless the caller explicitly asks to apply changes.
 - The MCP does not require API keys, tokens, cloud credentials, or external accounts.

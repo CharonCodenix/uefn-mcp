@@ -6,6 +6,7 @@ node_modules/
 !.env.example
 uefn-mcp.config.json
 guia_mcp_resumida_19_puntos.md
+scripts/installer_sandbox.local.mjs
 
 # Logs and runtime output
 *.log
