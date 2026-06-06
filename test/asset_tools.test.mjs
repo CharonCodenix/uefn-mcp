@@ -147,3 +147,28 @@ print(json.dumps(payload))
   assert.equal(payload.asset.objectPath, "/AirKings/Materials/BarProgress.BarProgress");
   assert.equal(payload.asset.tags.Parent, "/AirKings/Materials/Base");
 });
+
+test("python dry-run warns for unstable material graph calls", () => {
+  const pythonRoot = path.resolve(process.cwd(), "uefn-plugin", "Content", "Python");
+  const script = `
+import json
+import sys
+sys.path.insert(0, r"${pythonRoot.replaceAll("\\", "\\\\")}")
+import uefn_mcp_bridge as b
+
+payload = b.python_dry_run({
+    "script": "lib.get_inputs_for_material_expression(material, node)\\nlib.create_material_expression(material, unreal.MaterialExpressionAdd)"
+})
+print(json.dumps(payload))
+`;
+  const result = spawnSync(process.env.PYTHON ?? "python", ["-c", script], {
+    cwd: process.cwd(),
+    encoding: "utf8"
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.blocked, false);
+  assert.ok(payload.warnings.some((warning) => warning.includes("unstable UEFN material graph inspection")));
+  assert.ok(payload.warnings.some((warning) => warning.includes("material graph mutation/update")));
+});

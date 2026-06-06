@@ -2452,6 +2452,34 @@ def python_dry_run(args):
 
     risky_modules = {"os", "sys", "subprocess", "shutil", "socket", "requests", "urllib", "pathlib"}
     risky_calls = {"exec", "eval", "compile", "open", "__import__"}
+    unstable_material_graph_calls = {
+        "get_inputs_for_material_expression",
+        "get_input_node_output_name_for_material_expression",
+        "get_material_selected_nodes",
+    }
+    material_mutation_calls = {
+        "clear_all_material_instance_parameters",
+        "connect_material_expressions",
+        "connect_material_property",
+        "create_material_expression",
+        "create_material_expression_in_function",
+        "delete_all_material_expressions",
+        "delete_all_material_expressions_in_function",
+        "delete_material_expression",
+        "delete_material_expression_in_function",
+        "duplicate_material_expression",
+        "layout_material_expressions",
+        "layout_material_function_expressions",
+        "recompile_material",
+        "set_material_instance_parent",
+        "set_material_instance_scalar_parameter_value",
+        "set_material_instance_static_switch_parameter_value",
+        "set_material_instance_texture_parameter_value",
+        "set_material_instance_vector_parameter_value",
+        "set_material_usage",
+        "update_material_function",
+        "update_material_instance",
+    }
 
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
@@ -2469,10 +2497,18 @@ def python_dry_run(args):
             call_name = _call_name(node.func)
             if call_name:
                 calls.append(call_name)
+                call_leaf = call_name.split(".")[-1]
                 if call_name.split(".")[-1] in risky_calls:
                     warnings.append("Calls potentially risky function: {}".format(call_name))
                 if call_name.endswith((".unlink", ".rmdir", ".remove", ".rename", ".replace", ".rmtree")):
                     warnings.append("Calls filesystem mutation function: {}".format(call_name))
+                if call_leaf in unstable_material_graph_calls:
+                    warnings.append(
+                        "Calls unstable UEFN material graph inspection function: {}. "
+                        "Use a purpose-built limited material graph tool instead of generic uefn_run_python.".format(call_name)
+                    )
+                if call_leaf in material_mutation_calls:
+                    warnings.append("Calls material graph mutation/update function: {}".format(call_name))
 
     record = {
         "script": script,
