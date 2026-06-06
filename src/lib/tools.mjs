@@ -18,6 +18,8 @@ import { compileVerseViaWorkflow, probeVerseWorkflow } from "./verse_workflow.mj
 
 const ACTOR_RANKING_DESCRIPTION = "selected > Verse devices > UEFN devices > CustomCreativeDevices/important gameplay names > generic meshes";
 const ActorMatchBySchema = z.enum(["label", "name", "path", "auto"]);
+const AssetMatchBySchema = z.enum(["path", "name", "package", "auto"]);
+const AssetDependencyModeSchema = z.enum(["none", "dependencies", "referencers", "both"]);
 const ActorUpdateOperationSchema = z.object({
   path: z.string().min(1),
   op: z.enum(["set", "add"]),
@@ -48,14 +50,45 @@ export function registerUefnTools(server, config, store) {
     },
     {
       name: "uefn_search",
-      description: "Search Verse files or bridge scene actors using compact top matches and resource URIs.",
+      description: "Search Verse files, bridge scene actors, or Content Browser assets using compact top matches and resource URIs.",
       inputSchema: {
         query: z.string(),
-        scope: z.enum(["verse", "scene", "all"]).optional(),
+        scope: z.enum(["verse", "scene", "assets", "all"]).optional(),
         limit: z.number().int().min(1).max(100).optional(),
         projectPath: z.string().optional()
       },
       handler: (args) => searchTool(config, args)
+    },
+    {
+      name: "uefn_asset_search",
+      description: "Search/list Content Browser assets through UEFN Asset Registry without loading assets by default. Compact response; full result as a resource.",
+      inputSchema: {
+        query: z.string().optional(),
+        path: z.string().optional(),
+        recursive: z.boolean().optional(),
+        types: z.array(z.string().min(1)).max(20).optional(),
+        includeExternal: z.boolean().optional(),
+        selectedOnly: z.boolean().optional(),
+        includeTags: z.boolean().optional(),
+        detailLevel: z.enum(["summary", "detail"]).optional(),
+        limit: z.number().int().min(1).max(500).optional()
+      },
+      handler: (args) => assetSearchTool(config, args, store)
+    },
+    {
+      name: "uefn_get_asset_details",
+      description: "Inspect one Content Browser asset with registry metadata, optional tags/dependencies, and optional loaded editor properties.",
+      inputSchema: {
+        asset: z.string().min(1),
+        matchBy: AssetMatchBySchema.optional(),
+        includeExternal: z.boolean().optional(),
+        includeProperties: z.boolean().optional(),
+        includeTags: z.boolean().optional(),
+        includeDependencies: AssetDependencyModeSchema.optional(),
+        filter: z.string().optional(),
+        detailLevel: z.enum(["summary", "detail"]).optional()
+      },
+      handler: (args) => getAssetDetailsTool(config, args, store)
     },
     {
       name: "uefn_read_resource",
@@ -265,6 +298,27 @@ async function searchTool(config, args) {
     }
   }
 
+  if (scope === "assets" || scope === "all") {
+    try {
+      const assets = await bridgePost(config, "asset_search", {
+        query: args.query,
+        limit
+      }, 45000);
+      results.push({
+        ok: assets.ok !== false,
+        scope: "assets",
+        query: args.query,
+        count: assets.count ?? assets.assets?.length ?? 0,
+        totalMatches: assets.totalMatches ?? null,
+        assetRegistryLoading: assets.assetRegistryLoading ?? null,
+        matches: (assets.assets ?? []).map(compactAsset),
+        warnings: assets.warnings ?? []
+      });
+    } catch (error) {
+      results.push(errorPayload(error));
+    }
+  }
+
   return {
     ok: results.some((result) => result.ok),
     scope,
@@ -333,6 +387,38 @@ async function sceneContextTool(config, args, store) {
       ? "Use the resourceUri or add nameContains/classContains/folder filters for the remaining actors."
       : null
   };
+}
+
+async function assetSearchTool(config, args, store) {
+  const response = await bridgePost(config, "asset_search", {
+    ...args,
+    recursive: args.recursive !== false,
+    includeExternal: args.includeExternal === true,
+    selectedOnly: args.selectedOnly === true,
+    includeTags: args.includeTags === true,
+    detailLevel: args.detailLevel ?? "summary",
+    limit: args.limit ?? 50
+  }, 45000);
+  const resourceUri = store.addJson("content/assets", response, {
+    name: response.query ? `assets-${response.query}` : "assets-search"
+  });
+  return compactAssetSearchForResponse(response, resourceUri);
+}
+
+async function getAssetDetailsTool(config, args, store) {
+  const response = await bridgePost(config, "asset_details", {
+    ...args,
+    matchBy: args.matchBy ?? "auto",
+    includeExternal: args.includeExternal === true,
+    includeProperties: args.includeProperties === true,
+    includeTags: args.includeTags !== false,
+    includeDependencies: args.includeDependencies ?? "none",
+    detailLevel: args.detailLevel ?? "summary"
+  }, 60000);
+  const resourceUri = store.addJson("content/asset-details", response, {
+    name: response.asset?.name ? `asset-details-${response.asset.name}` : "asset-details"
+  });
+  return compactAssetDetailsForResponse(response, resourceUri);
 }
 
 async function visualContextTool(config, args, store) {
@@ -582,6 +668,56 @@ export function compactActorUpdateForResponse(response, resourceUri = null) {
   };
 }
 
+export function compactAssetSearchForResponse(response, resourceUri = null) {
+  const assets = response.assets ?? [];
+  const shown = assets.slice(0, 30);
+  return {
+    ok: response.ok !== false,
+    source: response.source ?? "asset_registry",
+    projectRoot: response.projectRoot ?? null,
+    path: response.path ?? null,
+    query: response.query ?? null,
+    assetRegistryLoading: response.assetRegistryLoading ?? null,
+    count: response.count ?? assets.length,
+    totalMatches: response.totalMatches ?? assets.length,
+    typeCounts: (response.typeCounts ?? []).slice(0, 12),
+    pathCounts: (response.pathCounts ?? []).slice(0, 12),
+    assets: shown.map(compactAsset),
+    omittedAssets: Math.max(0, (response.totalMatches ?? assets.length) - shown.length),
+    warnings: response.warnings ?? [],
+    resourceUri,
+    nextStep: assets.length > shown.length || (response.totalMatches ?? assets.length) > shown.length
+      ? "Use uefn_get_asset_details with an objectPath/packageName, or read the resourceUri for the full asset list."
+      : null
+  };
+}
+
+export function compactAssetDetailsForResponse(response, resourceUri = null) {
+  const properties = response.properties ?? [];
+  const dependencies = response.dependencies ?? [];
+  const referencers = response.referencers ?? [];
+  return {
+    ok: response.ok !== false,
+    asset: response.asset ? compactAsset(response.asset) : null,
+    tags: compactTagMap(response.asset?.tags ?? {}),
+    propertyCount: response.propertyCount ?? properties.length,
+    properties: properties.slice(0, 25).map(compactActorProperty),
+    omittedProperties: Math.max(0, properties.length - 25),
+    specialized: compactPreviewValue(response.specialized ?? {}),
+    verse: response.verse ?? null,
+    dependencies: dependencies.slice(0, 20),
+    omittedDependencies: Math.max(0, dependencies.length - 20),
+    referencers: referencers.slice(0, 20),
+    omittedReferencers: Math.max(0, referencers.length - 20),
+    warnings: response.warnings ?? [],
+    candidates: (response.candidates ?? []).slice(0, 10).map(compactAsset),
+    omittedCandidates: Math.max(0, (response.candidates ?? []).length - 10),
+    resourceUri,
+    error: response.error ?? null,
+    nextStep: response.nextStep ?? null
+  };
+}
+
 async function safeDiagnostics(config, args, defaults = {}) {
   try {
     return await readVerseDiagnostics({ ...defaults, ...args }, config);
@@ -703,6 +839,29 @@ function compactActor(actor, options = {}) {
     class: actor.class,
     folder: actor.folder,
     ...(options.includePath ? { path: actor.path } : {})
+  };
+}
+
+function compactAsset(asset) {
+  return {
+    name: asset.name,
+    class: asset.class ?? null,
+    classPath: asset.classPath ?? null,
+    packagePath: asset.packagePath ?? null,
+    packageName: asset.packageName ?? null,
+    objectPath: asset.objectPath ?? null,
+    loaded: asset.loaded ?? null,
+    redirector: asset.redirector ?? null
+  };
+}
+
+function compactTagMap(tags) {
+  const entries = Object.entries(tags ?? {});
+  const shown = entries.slice(0, 20);
+  return {
+    count: entries.length,
+    values: Object.fromEntries(shown.map(([key, value]) => [key, compactPreviewValue(value)])),
+    omittedTags: Math.max(0, entries.length - shown.length)
   };
 }
 

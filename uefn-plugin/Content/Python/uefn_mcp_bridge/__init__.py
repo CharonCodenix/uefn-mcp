@@ -61,6 +61,7 @@ _snapshots = {}
 _dry_runs = {}
 
 ACTOR_MATCH_BY_VALUES = {"label", "name", "path", "auto"}
+ASSET_MATCH_BY_VALUES = {"path", "name", "package", "auto"}
 TRANSFORM_PROPERTY_SUGGESTIONS = {
     "actorlocation": "transform.location",
     "location": "transform.location",
@@ -95,6 +96,38 @@ COMPONENT_PROPERTY_CANDIDATES = [
     "can_ever_affect_navigation",
     "editable_when_inherited",
     "asset_user_data",
+]
+ASSET_PROPERTY_CANDIDATES = [
+    "parent",
+    "generated_class",
+    "parent_class",
+    "blueprint_display_name",
+    "blueprint_description",
+    "new_variables",
+    "scalar_parameter_values",
+    "vector_parameter_values",
+    "texture_parameter_values",
+    "static_switch_parameter_values",
+    "base_property_overrides",
+    "material_function_infos",
+    "preview_mesh",
+    "asset_import_data",
+    "asset_user_data",
+]
+ASSET_TAG_CANDIDATES = [
+    "ParentClass",
+    "GeneratedClass",
+    "NativeParentClass",
+    "BlueprintType",
+    "ModuleRelativePath",
+    "AssetImportData",
+    "ImportedSize",
+    "TextureGroup",
+    "CompressionSettings",
+    "Parent",
+    "MaterialDomain",
+    "BlendMode",
+    "ShadingModel",
 ]
 
 
@@ -629,6 +662,26 @@ def _editor_actor_subsystem():
     return unreal.get_editor_subsystem(unreal.EditorActorSubsystem)
 
 
+def _asset_registry():
+    _require_unreal()
+    if not hasattr(unreal, "AssetRegistryHelpers"):
+        raise RuntimeError("UEFN Python does not expose AssetRegistryHelpers.")
+    return unreal.AssetRegistryHelpers.get_asset_registry()
+
+
+def _project_asset_root():
+    _require_unreal()
+    if hasattr(unreal, "EditorAssetLibrary"):
+        try:
+            root = unreal.EditorAssetLibrary.get_project_root_asset_directory()
+            if root:
+                text = str(root).strip().replace("\\", "/").strip("/")
+                return "/" + text if text else "/Game"
+        except Exception:
+            pass
+    return "/Game"
+
+
 def _process_main_thread_jobs(delta_seconds):
     global _main_thread_callback_handle
 
@@ -905,6 +958,616 @@ def _sort_actor_dicts_for_context(actor_dicts):
     return [actor_dict for _, actor_dict in indexed]
 
 
+def _normalize_asset_path(value, project_root=None):
+    text = str(value or "").strip().replace("\\", "/")
+    if not text:
+        return ""
+
+    quoted = re.search(r"'([^']+)'", text)
+    if quoted:
+        text = quoted.group(1)
+
+    if text.startswith('"') and text.endswith('"'):
+        text = text[1:-1]
+
+    text = text.split("?", 1)[0].strip()
+    if text.startswith("/All/"):
+        text = text[4:]
+
+    if not text.startswith("/"):
+        root = project_root or "/Game"
+        text = "{}/{}".format(str(root).rstrip("/"), text.lstrip("/"))
+
+    text = re.sub(r"/+", "/", text)
+    return text.rstrip("/") or "/"
+
+
+def _asset_package_from_object_path(value):
+    text = _normalize_asset_path(value)
+    if "." in text.rsplit("/", 1)[-1]:
+        return text.rsplit(".", 1)[0]
+    return text
+
+
+def _asset_object_path_from_package(package_name, asset_name=None):
+    package = _normalize_asset_path(package_name)
+    name = str(asset_name or package.rsplit("/", 1)[-1])
+    if "." in package.rsplit("/", 1)[-1]:
+        return package
+    return "{}.{}".format(package, name)
+
+
+def _asset_field(asset_data, *names):
+    for name in names:
+        try:
+            value = getattr(asset_data, name)
+        except Exception:
+            continue
+        try:
+            return value() if callable(value) else value
+        except TypeError:
+            continue
+        except Exception:
+            continue
+    return None
+
+
+def _asset_text(value):
+    if value is None:
+        return ""
+    try:
+        text = str(value)
+    except Exception:
+        text = repr(value)
+    return text
+
+
+def _asset_class_text(asset_data):
+    class_path = _asset_field(asset_data, "asset_class_path", "asset_class", "asset_class_name")
+    text = _asset_text(class_path)
+    if not text:
+        return "", ""
+    asset_name_match = re.search(r"asset_name:\s*\"([^\"]+)\"", text)
+    package_name_match = re.search(r"package_name:\s*\"([^\"]+)\"", text)
+    if asset_name_match:
+        class_name = asset_name_match.group(1)
+        if package_name_match:
+            return class_name, "{}.{}".format(package_name_match.group(1), class_name)
+    else:
+        class_name = text.replace("ClassPathName=", "").strip("()")
+        class_name = re.split(r"[./']", class_name)[-1] or text
+    return class_name, text
+
+
+def _asset_object_path(asset_data, package_name=None, asset_name=None):
+    for method_name in ["get_object_path_string", "to_soft_object_path", "get_soft_object_path", "get_full_name"]:
+        try:
+            method = getattr(asset_data, method_name)
+            value = method()
+            text = _asset_text(value)
+            if "'" in text:
+                quoted = re.search(r"'([^']+)'", text)
+                if quoted:
+                    text = quoted.group(1)
+            if " " in text:
+                tail = text.rsplit(" ", 1)[-1]
+                if tail.startswith("/"):
+                    text = tail
+            if text.startswith("/") and "." in text:
+                return text
+        except Exception:
+            pass
+    if package_name:
+        return _asset_object_path_from_package(package_name, asset_name)
+    return ""
+
+
+def _asset_is_valid(asset_data):
+    if asset_data is None:
+        return False
+    try:
+        return bool(asset_data.is_valid())
+    except Exception:
+        return bool(_asset_field(asset_data, "package_name") or _asset_field(asset_data, "asset_name"))
+
+
+def _asset_tags(asset_data, limit=40):
+    tags = {}
+    raw = None
+    try:
+        raw = getattr(asset_data, "tags_and_values")
+    except Exception:
+        raw = None
+
+    if raw is not None:
+        try:
+            items = raw.items()
+        except Exception:
+            try:
+                items = dict(raw).items()
+            except Exception:
+                items = []
+        for key, value in items:
+            if len(tags) >= limit:
+                break
+            tags[str(key)] = _jsonable(value)
+
+    for key in ASSET_TAG_CANDIDATES:
+        if len(tags) >= limit:
+            break
+        if key in tags:
+            continue
+        try:
+            value = asset_data.get_tag_value(key)
+        except Exception:
+            continue
+        if value is not None and str(value) != "":
+            tags[key] = _jsonable(value)
+    return tags
+
+
+def _asset_data_to_dict(asset_data, include_tags=False, detail_level="summary"):
+    asset_name = _asset_text(_asset_field(asset_data, "asset_name"))
+    package_name = _normalize_asset_path(_asset_text(_asset_field(asset_data, "package_name")))
+    package_path = _normalize_asset_path(_asset_text(_asset_field(asset_data, "package_path")))
+    class_name, class_path = _asset_class_text(asset_data)
+    object_path = _asset_object_path(asset_data, package_name, asset_name)
+    data = {
+        "name": asset_name or package_name.rsplit("/", 1)[-1],
+        "class": class_name,
+        "classPath": class_path,
+        "packageName": package_name,
+        "packagePath": package_path,
+        "objectPath": object_path,
+        "loaded": _asset_loaded(asset_data),
+        "redirector": _asset_redirector(asset_data),
+    }
+    if include_tags or detail_level == "detail":
+        data["tags"] = _asset_tags(asset_data, 120 if detail_level == "detail" else 40)
+    return data
+
+
+def _asset_loaded(asset_data):
+    try:
+        return bool(asset_data.is_asset_loaded())
+    except Exception:
+        return None
+
+
+def _asset_redirector(asset_data):
+    try:
+        return bool(asset_data.is_redirector())
+    except Exception:
+        return None
+
+
+def _asset_registry_loading(registry):
+    try:
+        return bool(registry.is_loading_assets())
+    except Exception:
+        return None
+
+
+def _registry_get_assets_by_path(registry, path, recursive=True):
+    path_name = _normalize_asset_path(path)
+    attempts = [
+        lambda: registry.get_assets_by_path(path_name, recursive=recursive, include_only_on_disk_assets=False),
+        lambda: registry.get_assets_by_path(path_name, recursive),
+        lambda: registry.get_assets_by_path(path_name),
+    ]
+    for attempt in attempts:
+        try:
+            return list(attempt())
+        except TypeError:
+            continue
+    return []
+
+
+def _registry_get_all_assets(registry):
+    for attempt in [
+        lambda: registry.get_all_assets(include_only_on_disk_assets=False),
+        lambda: registry.get_all_assets(),
+    ]:
+        try:
+            return list(attempt())
+        except TypeError:
+            continue
+        except Exception:
+            continue
+    return []
+
+
+def _registry_get_exact_asset(registry, identifier):
+    normalized = _normalize_asset_path(identifier)
+    package_name = _asset_package_from_object_path(normalized)
+    object_path = normalized if "." in normalized.rsplit("/", 1)[-1] else _asset_object_path_from_package(package_name)
+    candidates = []
+    for method_name, value in [
+        ("get_asset_by_object_path", object_path),
+        ("get_asset_by_package_name", package_name),
+    ]:
+        try:
+            method = getattr(registry, method_name)
+        except Exception:
+            continue
+        try:
+            asset_data = method(value)
+            if _asset_is_valid(asset_data):
+                candidates.append(asset_data)
+        except Exception:
+            pass
+    return _dedupe_asset_data(candidates)
+
+
+def _dedupe_asset_data(asset_data_list):
+    seen = set()
+    result = []
+    for asset_data in asset_data_list:
+        data = _asset_data_to_dict(asset_data)
+        key = data.get("objectPath") or data.get("packageName") or data.get("name")
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        result.append(asset_data)
+    return result
+
+
+def _is_project_asset_path(path, project_root):
+    normalized = _normalize_asset_path(path)
+    root = _normalize_asset_path(project_root)
+    return normalized == root or normalized.startswith(root.rstrip("/") + "/")
+
+
+def _asset_matches_query(asset_dict, query):
+    text = str(query or "").strip().lower()
+    if not text:
+        return True
+    haystack = " ".join(str(asset_dict.get(key, "")) for key in [
+        "name",
+        "class",
+        "classPath",
+        "packageName",
+        "packagePath",
+        "objectPath",
+    ]).lower()
+    return text in haystack
+
+
+def _asset_matches_types(asset_dict, types):
+    if not types:
+        return True
+    haystack = "{} {}".format(asset_dict.get("class", ""), asset_dict.get("classPath", "")).lower()
+    return any(str(asset_type or "").lower() in haystack for asset_type in types)
+
+
+def _sort_assets_for_context(assets):
+    indexed = list(enumerate(assets))
+    indexed.sort(key=lambda item: (
+        str(item[1].get("packagePath", "")).lower(),
+        str(item[1].get("class", "")).lower(),
+        str(item[1].get("name", "")).lower(),
+        item[0],
+    ))
+    return [asset for _, asset in indexed]
+
+
+def _selected_asset_data():
+    if not hasattr(unreal, "EditorUtilityLibrary"):
+        return []
+    for method_name in ["get_selected_asset_data", "get_selected_assets"]:
+        try:
+            method = getattr(unreal.EditorUtilityLibrary, method_name)
+            selected = list(method())
+            if method_name == "get_selected_assets":
+                return [_object_to_asset_data(asset) for asset in selected if asset is not None]
+            return selected
+        except Exception:
+            pass
+    return []
+
+
+def _object_to_asset_data(asset):
+    try:
+        registry = _asset_registry()
+        path = _object_path(asset)
+        exact = _registry_get_exact_asset(registry, path)
+        if exact:
+            return exact[0]
+    except Exception:
+        pass
+    return asset
+
+
+def _asset_search_source(args, registry, project_root, warnings):
+    if args.get("selectedOnly", False):
+        selected = _selected_asset_data()
+        if not selected:
+            warnings.append("No Content Browser selected assets were reported by UEFN.")
+        return selected, "content_browser_selection", project_root
+
+    include_external = args.get("includeExternal", False) is True
+    path = _normalize_asset_path(args.get("path") or project_root, project_root)
+    if not include_external and not _is_project_asset_path(path, project_root):
+        raise RuntimeError("Asset path '{}' is outside project root '{}'. Pass includeExternal=true for read-only external content.".format(path, project_root))
+    if include_external and args.get("path") in (None, "", "/", "/All"):
+        warnings.append("includeExternal=true can scan a large Content Browser namespace; pass path for faster results.")
+    return _registry_get_assets_by_path(registry, path, args.get("recursive", True) is not False), "asset_registry", path
+
+
+def asset_search_on_main_thread(args):
+    detail_level = args.get("detailLevel", "summary")
+    limit = max(1, min(int(args.get("limit", 50)), 500))
+    include_tags = bool(args.get("includeTags", False))
+    types = args.get("types") or []
+    warnings = []
+    registry = _asset_registry()
+    project_root = _project_asset_root()
+    asset_registry_loading = _asset_registry_loading(registry)
+    asset_data_list, source, path = _asset_search_source(args, registry, project_root, warnings)
+    assets = []
+
+    for asset_data in asset_data_list:
+        if not _asset_is_valid(asset_data):
+            continue
+        asset_dict = _asset_data_to_dict(asset_data, include_tags, detail_level)
+        if not _asset_matches_query(asset_dict, args.get("query")):
+            continue
+        if not _asset_matches_types(asset_dict, types):
+            continue
+        assets.append(asset_dict)
+
+    sorted_assets = _sort_assets_for_context(assets)
+    limited_assets = sorted_assets[:limit]
+    type_counts = Counter(asset.get("class") or "Unknown" for asset in sorted_assets)
+    path_counts = Counter(asset.get("packagePath") or "" for asset in sorted_assets)
+    if asset_registry_loading:
+        warnings.append("Asset Registry is still loading; retry if expected assets are missing.")
+    return {
+        "ok": True,
+        "source": source,
+        "projectRoot": project_root,
+        "path": path,
+        "query": args.get("query"),
+        "assetRegistryLoading": asset_registry_loading,
+        "count": len(limited_assets),
+        "totalMatches": len(sorted_assets),
+        "typeCounts": type_counts.most_common(20),
+        "pathCounts": path_counts.most_common(20),
+        "assets": limited_assets,
+        "warnings": sorted(set(warnings)),
+    }
+
+
+def asset_search(args):
+    return _run_on_editor_main_thread("asset_search", asset_search_on_main_thread, args, timeout_seconds=45)
+
+
+def _resolve_asset(identifier, match_by="auto", include_external=False):
+    identifier = str(identifier or "").strip()
+    match_by = str(match_by or "auto").lower()
+    if not identifier:
+        return {
+            "ok": False,
+            "error": "Asset identifier is required.",
+            "candidates": [],
+            "nextStep": "Pass asset with an exact object path, package path, or asset name.",
+        }
+    if match_by not in ASSET_MATCH_BY_VALUES:
+        return {
+            "ok": False,
+            "error": "Unsupported matchBy value: {}".format(match_by),
+            "candidates": [],
+            "nextStep": "Use matchBy path, name, package, or auto.",
+        }
+
+    registry = _asset_registry()
+    project_root = _project_asset_root()
+    matches = []
+
+    if match_by in {"path", "package", "auto"} or identifier.startswith("/") or "'" in identifier:
+        matches.extend(_registry_get_exact_asset(registry, _normalize_asset_path(identifier, project_root)))
+
+    if match_by in {"name", "auto"} and not matches:
+        search_root = project_root
+        asset_data_list = _registry_get_assets_by_path(registry, search_root, True)
+        expected = identifier.lower()
+        for asset_data in asset_data_list:
+            if not _asset_is_valid(asset_data):
+                continue
+            asset_dict = _asset_data_to_dict(asset_data)
+            values = [
+                asset_dict.get("name", ""),
+                asset_dict.get("packageName", ""),
+                asset_dict.get("objectPath", ""),
+            ]
+            if any(str(value).lower() == expected for value in values):
+                matches.append(asset_data)
+
+    if include_external and not matches and identifier.startswith("/"):
+        matches.extend(_registry_get_exact_asset(registry, identifier))
+
+    matches = _dedupe_asset_data(matches)
+    if len(matches) == 1:
+        return {"ok": True, "assetData": matches[0], "projectRoot": project_root}
+    if len(matches) > 1:
+        return {
+            "ok": False,
+            "error": "Asset identifier is ambiguous: {} using matchBy={}.".format(identifier, match_by),
+            "candidates": [_asset_data_to_dict(asset_data) for asset_data in matches[:20]],
+            "nextStep": "Retry with matchBy=path using one of the returned objectPath or packageName values.",
+        }
+
+    query_matches = asset_search_on_main_thread({
+        "query": identifier,
+        "path": project_root,
+        "recursive": True,
+        "limit": 20,
+        "detailLevel": "summary",
+    }).get("assets", [])
+    return {
+        "ok": False,
+        "error": "Asset not found: {} using matchBy={}.".format(identifier, match_by),
+        "candidates": query_matches,
+        "nextStep": "Use uefn_asset_search to find the exact objectPath or packageName, then retry.",
+    }
+
+
+def _load_asset(asset_dict):
+    paths = [asset_dict.get("objectPath"), asset_dict.get("packageName")]
+    if hasattr(unreal, "EditorAssetLibrary"):
+        for asset_path in paths:
+            if not asset_path:
+                continue
+            try:
+                asset = unreal.EditorAssetLibrary.load_asset(asset_path)
+                if asset is not None:
+                    return asset
+            except Exception:
+                pass
+    return None
+
+
+def _asset_dependencies(asset_data, mode):
+    if mode in (None, "", "none"):
+        return {}
+    registry = _asset_registry()
+    package_name = _asset_text(_asset_field(asset_data, "package_name"))
+    result = {}
+    if mode in {"dependencies", "both"}:
+        result["dependencies"] = _dependency_list(registry, "get_dependencies", package_name)
+    if mode in {"referencers", "both"}:
+        result["referencers"] = _dependency_list(registry, "get_referencers", package_name)
+    return result
+
+
+def _dependency_list(registry, method_name, package_name):
+    try:
+        method = getattr(registry, method_name)
+    except Exception:
+        return []
+    for attempt in [
+        lambda: method(package_name),
+        lambda: method(package_name, recursive=False),
+    ]:
+        try:
+            values = attempt()
+            return [str(value) for value in list(values)[:200]]
+        except TypeError:
+            continue
+        except Exception:
+            continue
+    return []
+
+
+def _asset_specialized_details(asset, asset_dict, detail_level="summary", filter_text=None):
+    if asset is None:
+        return {}
+    class_text = "{} {}".format(asset_dict.get("class", ""), asset_dict.get("classPath", "")).lower()
+    details = {}
+    if "material" in class_text:
+        details["material"] = _selected_editor_properties(
+            asset,
+            [
+                "parent",
+                "scalar_parameter_values",
+                "vector_parameter_values",
+                "texture_parameter_values",
+                "static_switch_parameter_values",
+                "base_property_overrides",
+            ],
+            filter_text,
+        )
+    if "widgetblueprint" in class_text or "blueprint" in class_text:
+        details["blueprint"] = _selected_editor_properties(
+            asset,
+            [
+                "generated_class",
+                "parent_class",
+                "blueprint_display_name",
+                "blueprint_description",
+                "new_variables",
+                "widget_tree",
+            ],
+            filter_text,
+        )
+    return details
+
+
+def _selected_editor_properties(obj, names, filter_text=None):
+    compiled_filter = _compile_filter(filter_text)
+    result = {}
+    for name in names:
+        if not _matches_filter(compiled_filter, name):
+            continue
+        try:
+            result[name] = _jsonable(obj.get_editor_property(name))
+        except Exception:
+            pass
+    return result
+
+
+def _verse_source_hint(asset_dict):
+    name = str(asset_dict.get("name") or "")
+    if not name or "/" in name:
+        return None
+    return {
+        "name": name,
+        "note": "Verse class assets are backed by Verse source. Use uefn_search scope=verse or uefn_project_summary includeArchitecture=true to inspect @editable fields and class definitions.",
+    }
+
+
+def asset_details_on_main_thread(args):
+    include_external = args.get("includeExternal", False) is True
+    result = _resolve_asset(args.get("asset"), args.get("matchBy", "auto"), include_external)
+    if not result.get("ok"):
+        return result
+
+    detail_level = args.get("detailLevel", "summary")
+    filter_text = args.get("filter")
+    asset_data = result["assetData"]
+    asset_dict = _asset_data_to_dict(asset_data, args.get("includeTags", True) is not False, detail_level)
+    include_properties = bool(args.get("includeProperties", False)) or bool(filter_text)
+    warnings = []
+    asset = None
+    properties = []
+    specialized = {}
+
+    if include_properties:
+        asset = _load_asset(asset_dict)
+        if asset is None:
+            warnings.append("Could not load asset for editor properties; returning Asset Registry metadata only.")
+        else:
+            properties = _editor_properties_for_object(
+                asset,
+                "asset_editor_property",
+                detail_level,
+                filter_text,
+                ASSET_PROPERTY_CANDIDATES,
+            )
+            specialized = _asset_specialized_details(asset, asset_dict, detail_level, filter_text)
+            if filter_text and not properties and not specialized:
+                warnings.append("No readable asset editor properties matched filter '{}'.".format(filter_text))
+
+    class_text = "{} {}".format(asset_dict.get("class", ""), asset_dict.get("classPath", "")).lower()
+    verse = _verse_source_hint(asset_dict) if "verse" in class_text else None
+    dependency_mode = args.get("includeDependencies", "none")
+    dependency_data = _asset_dependencies(asset_data, dependency_mode)
+    return {
+        "ok": True,
+        "asset": asset_dict,
+        "properties": properties,
+        "propertyCount": len(properties),
+        "specialized": specialized,
+        "verse": verse,
+        "warnings": sorted(set(warnings)),
+        **dependency_data,
+    }
+
+
+def asset_details(args):
+    return _run_on_editor_main_thread("asset_details", asset_details_on_main_thread, args, timeout_seconds=60)
+
+
 def _matches_folder(actor, folder):
     if not folder:
         return True
@@ -1036,6 +1699,9 @@ def _filter_tokens(filter_text):
 def _compile_filter(filter_text):
     if not filter_text:
         return None
+    tokens = _filter_tokens(filter_text)
+    if len(tokens) > 1:
+        return [token.lower() for token in tokens]
     try:
         return re.compile(str(filter_text), re.IGNORECASE)
     except re.error:
@@ -1046,6 +1712,9 @@ def _matches_filter(compiled_filter, *values):
     if not compiled_filter:
         return True
     text = " ".join(str(value) for value in values if value is not None)
+    if isinstance(compiled_filter, list):
+        lower = text.lower()
+        return any(token in lower for token in compiled_filter)
     if hasattr(compiled_filter, "search"):
         return bool(compiled_filter.search(text))
     return str(compiled_filter) in text.lower()
@@ -1921,6 +2590,8 @@ TOOLS = {
     "scene_context": scene_context,
     "actor_details": actor_details,
     "update_actor": update_actor,
+    "asset_search": asset_search,
+    "asset_details": asset_details,
     "visual_context": visual_context,
     "python_dry_run": python_dry_run,
     "python_execute": python_execute,

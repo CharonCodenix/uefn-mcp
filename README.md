@@ -6,6 +6,8 @@ This project is released for the community under the MIT license.
 
 This is a very early version of the project. The goal is to keep scaling it alongside the UEFN ecosystem so it becomes increasingly useful for developers building on this platform.
 
+> **Warning:** This release includes experimental features that are still under active development. Use it with great care, especially in production or important UEFN projects.
+
 ## Installation Options
 
 You have three good ways to install it:
@@ -52,7 +54,7 @@ If Codex Desktop shows the MCP as enabled but the agent cannot see its tools, se
 - A reusable UEFN Python plugin installed into `Content/Python/uefn_mcp_bridge`.
 - A visible UEFN MCP launcher window with a `Start Bridge` button.
 - Direct Verse compilation through UEFN's local Verse Workflow Server at `127.0.0.1:1962`.
-- Scene context, actor inspection, actor updates, diagnostics, and viewport screenshots.
+- Scene context, actor inspection, actor updates, Content Browser asset inspection, diagnostics, and viewport screenshots.
 - UEFN Python execution with a required dry-run safety workflow.
 
 ## Prerequisites
@@ -262,6 +264,8 @@ This uses the same safety checks for the UEFN project files. It does not remove 
 - `uefn_status`: project, bridge, and Verse workflow health.
 - `uefn_project_summary`: compact project and Verse file summary.
 - `uefn_search`: search Verse files or scene actors.
+- `uefn_asset_search`: search/list Content Browser assets through UEFN Asset Registry without loading assets by default.
+- `uefn_get_asset_details`: inspect one Content Browser asset with registry metadata, tags, dependencies, and optional loaded editor properties.
 - `uefn_read_resource`: read a returned `uefn://...` resource URI.
 - `uefn_scene_context`: compact scene snapshot via UEFN Python.
 - `uefn_get_actor_details`: inspect an actor's transform, components, and editable fields.
@@ -270,6 +274,14 @@ This uses the same safety checks for the UEFN project files. It does not remove 
 - `uefn_compile_verse`: compile Verse via UEFN's Verse Workflow Server and parse logs.
 - `uefn_diagnostics`: compact Verse diagnostics or log tail.
 - `uefn_run_python`: dry-run first; clean dry-runs auto-execute.
+
+Content Browser asset workflow:
+
+```text
+uefn_asset_search -> uefn_get_asset_details -> uefn_read_resource only when the compact result omits needed detail
+```
+
+Asset search uses UEFN's Asset Registry and does not load assets by default. Asset details also stay metadata-only unless `includeProperties=true`, which may load the target asset to read editor properties. External roots such as Fortnite/Epic content are not searched unless `includeExternal=true`.
 
 ## Useful Commands
 
@@ -331,6 +343,8 @@ Large data is intentionally kept out of tool responses and exposed through resou
 - `uefn://scene/snapshot/{id}`
 - `uefn://scene/actor-details/{id}`
 - `uefn://scene/actor-updates/{id}`
+- `uefn://content/assets/{id}`
+- `uefn://content/asset-details/{id}`
 - `uefn://visual/{id}.png`
 - `uefn://logs/verse/{id}`
 - `uefn://python/dry-run/{id}`
